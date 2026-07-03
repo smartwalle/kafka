@@ -1,4 +1,4 @@
-module kafka
+module github.com/smartwalle/kafka
 
 go 1.25.0
 

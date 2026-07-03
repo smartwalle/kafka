@@ -47,8 +47,8 @@ type Consumer struct {
 	// partitionSlots 用于限制正在执行 OnMessage 的 partition 数量；nil 表示不限制。
 	partitionSlots chan struct{}
 
-	// groupFactory 默认创建独立的 Sarama ConsumerGroup，调用方可按需复用 sarama.Client。
-	groupFactory ConsumerGroupFactory
+	// consumerGroupFactory 默认创建独立的 Sarama ConsumerGroup，调用方可按需复用 sarama.Client。
+	consumerGroupFactory ConsumerGroupFactory
 }
 
 // NewConsumer 创建一个 Consumer。
@@ -61,11 +61,11 @@ func NewConsumer(config ConsumerConfig) *Consumer {
 		partitionSlots = make(chan struct{}, config.MaxConcurrentPartitions)
 	}
 	return &Consumer{
-		config:         config,
-		state:          StateIdle,
-		done:           make(chan struct{}),
-		partitionSlots: partitionSlots,
-		groupFactory:   defaultConsumerGroupFactory,
+		config:               config,
+		state:                StateIdle,
+		done:                 make(chan struct{}),
+		partitionSlots:       partitionSlots,
+		consumerGroupFactory: defaultConsumerGroupFactory,
 	}
 }
 
@@ -77,11 +77,11 @@ func defaultConsumerGroupFactory(config ConsumerConfig) (sarama.ConsumerGroup, e
 //
 // 传入 nil 会恢复为默认的 sarama.NewConsumerGroup。该方法应在 Start 前调用；
 // Start 后调用不会替换已经创建的 ConsumerGroup。
-func (c *Consumer) UseConsumerGroupFactory(factory ConsumerGroupFactory) {
-	if factory == nil {
-		factory = defaultConsumerGroupFactory
+func (c *Consumer) UseConsumerGroupFactory(fn ConsumerGroupFactory) {
+	if fn == nil {
+		fn = defaultConsumerGroupFactory
 	}
-	c.groupFactory = factory
+	c.consumerGroupFactory = fn
 }
 
 // OnMessage 注册消息处理回调。
@@ -133,7 +133,7 @@ func (c *Consumer) Start(ctx context.Context) error {
 	default:
 	}
 
-	group, err := c.groupFactory(c.config)
+	group, err := c.consumerGroupFactory(c.config)
 	if err != nil {
 		return err
 	}
