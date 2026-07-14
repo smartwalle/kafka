@@ -2,14 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"log"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/smartwalle/kafka/examples"
+	"github.com/xdg-go/scram"
 
 	"github.com/IBM/sarama"
 
@@ -17,29 +19,37 @@ import (
 )
 
 func main() {
+	certPool, err := kafka.NewCertPool(examples.CAFile)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
 	var config = kafka.NewConsumerConfig()
 	config.Brokers = examples.Brokers
 	config.GroupID = examples.GroupID
 	config.Topics = []string{examples.Topic}
-	config.MaxConcurrentPartitions = 0
+
+	config.SaramaConfig.Version = sarama.V2_8_0_0
+	config.SaramaConfig.Net.DialTimeout = 10 * time.Second
+	config.SaramaConfig.Net.TLS.Enable = true
+	config.SaramaConfig.Net.TLS.Config = &tls.Config{RootCAs: certPool}
+	config.SaramaConfig.Net.SASL.Enable = true
+	config.SaramaConfig.Net.SASL.User = examples.User
+	config.SaramaConfig.Net.SASL.Password = examples.Password
+	config.SaramaConfig.Net.SASL.Mechanism = sarama.SASLTypeSCRAMSHA512
+	config.SaramaConfig.Net.SASL.SCRAMClientGeneratorFunc = func() sarama.SCRAMClient {
+		return kafka.NewSCRAMClient(scram.SHA512)
+	}
 
 	config.SaramaConfig.Consumer.Offsets.Initial = sarama.OffsetOldest
 	config.SaramaConfig.Consumer.Return.Errors = true
 	config.SaramaConfig.Consumer.Offsets.AutoCommit.Enable = true
 
 	var consumer = kafka.NewConsumer(config)
-	var consumed atomic.Uint64
+
 	consumer.OnMessage(func(ctx context.Context, committer kafka.Committer, msg *kafka.Message) {
-		if err := processMessage(ctx, msg); err != nil {
-			log.Printf("process message failed: topic=%s partition=%d offset=%d err=%v", msg.Topic, msg.Partition, msg.Offset, err)
-			return
-		}
-
+		log.Printf("latest topic=%s partition=%d offset=%d message=%s \n", msg.Topic, msg.Partition, msg.Offset, string(msg.Value))
 		committer.MarkMessage(msg, "")
-
-		if n := consumed.Add(1); n%1000 == 0 {
-			log.Printf("consumed=%d latest topic=%s partition=%d offset=%d n=%d", n, msg.Topic, msg.Partition, msg.Offset, n)
-		}
 	})
 
 	consumer.OnError(func(_ context.Context, err error) {
@@ -54,22 +64,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := consumer.Start(ctx); err != nil {
+	if err = consumer.Start(ctx); err != nil {
 		log.Fatalf("start consumer failed: %v", err)
 	}
 
 	<-ctx.Done()
-	if err := consumer.Stop(context.Background()); err != nil {
+
+	if err = consumer.Stop(context.Background()); err != nil {
 		log.Printf("stop consumer failed: %v", err)
 	}
-}
-
-func processMessage(ctx context.Context, _ *kafka.Message) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
-
-	return nil
 }
